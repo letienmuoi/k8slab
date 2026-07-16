@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    lab.muoilt.vn/purpose: monitor-flink-for-60-seconds
+  labels:
+    app: ai-data-pipeline
+    component: flink-monitor
+    lab: "1.1"
+  name: pod-60
+  namespace: data-platform
+spec:
+  containers:
+    - command:
+        - /usr/bin/bash
+        - -ec
+        - 'deadline=$((SECONDS + MONITOR_DURATION_SECONDS)); while (( SECONDS < deadline )); do /usr/bin/curl -fsS "$CHECK_TARGET"; printf "\n"; /usr/bin/sleep "$CHECK_INTERVAL_SECONDS"; done'
+      env:
+        - name: APP_ENV
+          value: lab
+        - name: OWNER
+          value: franc
+        - name: CHECK_TARGET
+          value: http://flink-jobmanager:8081/jobs/overview
+        - name: CHECK_INTERVAL_SECONDS
+          value: "10"
+        - name: MONITOR_DURATION_SECONDS
+          value: "60"
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      name: pod-60
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+        requests:
+          cpu: 25m
+          memory: 32Mi
+  dnsPolicy: ClusterFirst
+  restartPolicy: Never
+status: {}

@@ -1,0 +1,50 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-data-pipeline-lab-sql
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "1.3"
+data:
+  one-off.sql: |
+    SET 'execution.runtime-mode' = 'batch';
+    SET 'parallelism.default' = '1';
+    SET 'table.dml-sync' = 'true';
+
+    CREATE TABLE raw_data_sink (
+      line STRING
+    ) WITH (
+      'connector' = 'kafka',
+      'topic' = 'raw-data',
+      'properties.bootstrap.servers' = 'kafka:9092',
+      'format' = 'raw',
+      'raw.charset' = 'UTF-8'
+    );
+
+    INSERT INTO raw_data_sink
+    VALUES
+      ('  LAB13 ONE-OFF   HELLO AI  '),
+      ('KUBERNETES JOB RUNS ONCE');
+  scheduled.sql: |
+    SET 'execution.runtime-mode' = 'batch';
+    SET 'parallelism.default' = '1';
+    SET 'table.dml-sync' = 'true';
+
+    CREATE TABLE raw_data_sink (
+      line STRING
+    ) WITH (
+      'connector' = 'kafka',
+      'topic' = 'raw-data',
+      'properties.bootstrap.servers' = 'kafka:9092',
+      'format' = 'raw',
+      'raw.charset' = 'UTF-8'
+    );
+
+    INSERT INTO raw_data_sink
+    SELECT CONCAT(
+      '  LAB13 CRONJOB REAL RUN ',
+      CAST(CURRENT_TIMESTAMP AS STRING),
+      '  '
+    )
+    FROM (VALUES (1)) AS trigger_row(id);

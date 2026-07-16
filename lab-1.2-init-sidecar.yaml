@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-init-sidecar-input
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "1.2"
+data:
+  input.txt: |2
+      LAB12    HELLO AI DATA PIPELINE
+    Apache NIFI to KAFKA FROM LAB12
+    FLINK writes ICEBERG on MINIO LAB12
+  pipeline.sql: |
+    SET 'execution.runtime-mode' = 'batch';
+    SET 'parallelism.default' = '1';
+    SET 'table.dml-sync' = 'true';
+
+    CREATE TABLE file_source (
+      line STRING
+    ) WITH (
+      'connector' = 'filesystem',
+      'path' = 'file:///work/input.txt',
+      'format' = 'csv',
+      'csv.field-delimiter' = '|',
+      'csv.disable-quote-character' = 'true'
+    );
+
+    CREATE TABLE raw_data_sink (
+      line STRING
+    ) WITH (
+      'connector' = 'kafka',
+      'topic' = 'raw-data',
+      'properties.bootstrap.servers' = 'kafka:9092',
+      'format' = 'raw',
+      'raw.charset' = 'UTF-8'
+    );
+
+    INSERT INTO raw_data_sink
+    SELECT line
+    FROM file_source
+    WHERE line IS NOT NULL AND CHAR_LENGTH(TRIM(line)) > 0;
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pipeline-init-sidecar-demo
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "1.2"
+    pattern: init-sidecar
+  annotations:
+    lab.muoilt.vn/flow: "ConfigMap -> init -> emptyDir -> app -> Kafka -> Flink; app log -> emptyDir -> sidecar"
+spec:
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 5
+  securityContext:
+    fsGroup: 9999
+    fsGroupChangePolicy: OnRootMismatch
+  volumes:
+    - name: source-config
+      configMap:
+        name: pipeline-init-sidecar-input
+    - name: pipeline-work
+      emptyDir: {}
+    - name: pipeline-logs
+      emptyDir: {}
+  initContainers:
+    - name: prepare-pipeline
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/bash
+        - -ec
+      args:
+        - |
+          install -m 0644 /config/input.txt /work/input.txt
+          install -m 0644 /config/pipeline.sql /work/pipeline.sql
+          install -m 0664 /dev/null /var/log/pipeline/app.log
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+      volumeMounts:
+        - name: source-config
+          mountPath: /config
+          readOnly: true
+        - name: pipeline-work
+          mountPath: /work
+        - name: pipeline-logs
+          mountPath: /var/log/pipeline
+  containers:
+    - name: app
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/bash
+        - -ec
+      args:
+        - |
+          exec /opt/flink/bin/sql-client.sh embedded -Dexecution.target=local --file /work/pipeline.sql > /var/log/pipeline/app.log 2>&1
+      resources:
+        requests:
+          cpu: 200m
+          memory: 768Mi
+        limits:
+          cpu: "1"
+          memory: 1536Mi
+      volumeMounts:
+        - name: pipeline-work
+          mountPath: /work
+          readOnly: true
+        - name: pipeline-logs
+          mountPath: /var/log/pipeline
+    - name: sidecar
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/tail
+      args:
+        - -n
+        - "+1"
+        - -F
+        - /var/log/pipeline/app.log
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+      volumeMounts:
+        - name: pipeline-work
+          mountPath: /work
+          readOnly: true
+        - name: pipeline-logs
+          mountPath: /var/log/pipeline

@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: audit-kafka-topics-dev
+      namespace: data-platform
+      labels:
+        app: ai-data-pipeline
+        lab: "1.4"
+        env: dev
+        tier: ingest
+        track: stable
+        component: kafka
+      annotations:
+        lab.muoilt.vn/purpose: "List real Kafka topics"
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 120
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: audit
+          image: apache/kafka:3.9.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/kafka/bin/kafka-topics.sh
+          args:
+            - --bootstrap-server
+            - kafka:9092
+            - --list
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: audit-kafka-raw-prod
+      namespace: data-platform
+      labels:
+        app: ai-data-pipeline
+        lab: "1.4"
+        env: prod
+        tier: ingest
+        track: stable
+        component: kafka
+      annotations:
+        lab.muoilt.vn/purpose: "Describe the real raw-data topic"
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 120
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: audit
+          image: apache/kafka:3.9.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/kafka/bin/kafka-topics.sh
+          args:
+            - --bootstrap-server
+            - kafka:9092
+            - --describe
+            - --topic
+            - raw-data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: audit-flink-jobs-dev
+      namespace: data-platform
+      labels:
+        app: ai-data-pipeline
+        lab: "1.4"
+        env: dev
+        tier: process
+        track: stable
+        component: flink
+      annotations:
+        lab.muoilt.vn/purpose: "List real Flink jobs through the CLI"
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 120
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: audit
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/flink/bin/flink
+          args:
+            - list
+            - -m
+            - flink-jobmanager:8081
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: audit-flink-api-prod
+      namespace: data-platform
+      labels:
+        app: ai-data-pipeline
+        lab: "1.4"
+        env: prod
+        tier: process
+        track: stable
+        component: flink
+      annotations:
+        lab.muoilt.vn/purpose: "Query the real Flink REST API"
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 120
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: audit
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/curl
+          args:
+            - -fsS
+            - http://flink-jobmanager:8081/jobs/overview
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: audit-iceberg-tables-dev
+      namespace: data-platform
+      labels:
+        app: ai-data-pipeline
+        lab: "1.4"
+        env: dev
+        tier: serve
+        track: canary
+        component: iceberg
+      annotations:
+        lab.muoilt.vn/purpose: "List real Iceberg medallion tables"
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 120
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: audit
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/curl
+          args:
+            - -fsS
+            - http://iceberg-rest:8181/v1/namespaces/medallion/tables
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: audit-minio-health-prod
+      namespace: data-platform
+      labels:
+        app: ai-data-pipeline
+        lab: "1.4"
+        env: prod
+        tier: serve
+        track: canary
+        component: minio
+      annotations:
+        lab.muoilt.vn/purpose: "Check the real MinIO readiness endpoint"
+    spec:
+      restartPolicy: Never
+      activeDeadlineSeconds: 120
+      terminationGracePeriodSeconds: 1
+      containers:
+        - name: audit
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/curl
+          args:
+            - -fsS
+            - -w
+            - "minio_ready_http=%{http_code}\n"
+            - http://minio:9000/minio/health/ready
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

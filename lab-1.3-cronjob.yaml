@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ai-data-pipeline-schedule
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "1.3"
+    workload: scheduled
+spec:
+  schedule: "*/1 * * * *"
+  timeZone: Asia/Ho_Chi_Minh
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  suspend: false
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "1.3"
+        workload: scheduled
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 180
+      template:
+        metadata:
+          labels:
+            app: ai-data-pipeline
+            lab: "1.3"
+            workload: scheduled
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pipeline
+              image: mualanhlung017/ai-data-pipeline:1.0.2
+              imagePullPolicy: IfNotPresent
+              command:
+                - /opt/flink/bin/sql-client.sh
+              args:
+                - embedded
+                - -Dexecution.target=local
+                - --file
+                - /opt/lab-sql/scheduled.sql
+              resources:
+                requests:
+                  cpu: 200m
+                  memory: 768Mi
+                limits:
+                  cpu: "1"
+                  memory: 1536Mi
+              volumeMounts:
+                - name: pipeline-sql
+                  mountPath: /opt/lab-sql
+                  readOnly: true
+          volumes:
+            - name: pipeline-sql
+              configMap:
+                name: ai-data-pipeline-lab-sql
