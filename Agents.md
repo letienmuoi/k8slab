@@ -8,6 +8,26 @@
 - Kubernetes is enabled locally.
 - `kubectl` is installed. Observed client version: `v1.36.1`.
 
+## Windows Batch Runners
+
+The repository contains tested Windows `cmd` runners:
+
+```text
+lab-1.1.bat
+lab-1.2.bat
+lab-1.3.bat
+lab-1.4.bat
+README-batch-labs.md
+```
+
+Each script defaults to `run` and also exposes focused actions such as `verify` and `cleanup`. Run `<script> help` for the complete action list.
+
+- Lab 1.1 exports ignored file `pod-60.generated.yaml`, runs the monitor for 60 seconds, and verifies completion.
+- Lab 1.2 waits for init/app completion while leaving the classic sidecar running until cleanup.
+- Lab 1.3 waits for one real CronJob schedule and then automatically sets `suspend=true`.
+- Lab 1.4 executes selectors, the intentional missing-`--overwrite` failure, updates, annotations, and final count assertions.
+- `.gitattributes` enforces CRLF for `.bat`; bare LF caused `cmd.exe` to misread the first characters of lines during testing.
+
 ## Lab 1.1: The 60-Second Pod
 
 Objective:
