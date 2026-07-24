@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-triage
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "5.3"
+    component: triage-api
+  annotations:
+    lab.muoilt.vn/purpose: "Final fixed state for broken YAML triage"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "5.3"
+      component: triage-api
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "5.3"
+        component: triage-api
+    spec:
+      initContainers:
+        - name: compile-api
+          image: eclipse-temurin:17-jdk-jammy
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/javac
+          args:
+            - --add-modules
+            - jdk.httpserver,java.net.http
+            - -d
+            - /opt/triage-classes
+            - /opt/triage-source/TriageApi.java
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: source
+              mountPath: /opt/triage-source
+              readOnly: true
+            - name: classes
+              mountPath: /opt/triage-classes
+      containers:
+        - name: gateway
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/java
+          args:
+            - -Xms16m
+            - -Xmx64m
+            - --add-modules
+            - jdk.httpserver,java.net.http
+            - -cp
+            - /opt/triage-classes
+            - TriageApi
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: IMAGE_RELEASE
+              value: "1.0.2"
+            - name: FLINK_JOBS_URL
+              value: http://flink-jobmanager:8081/jobs/overview
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 192Mi
+          volumeMounts:
+            - name: classes
+              mountPath: /opt/triage-classes
+              readOnly: true
+      volumes:
+        - name: source
+          configMap:
+            name: pipeline-triage-source
+        - name: classes
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-triage
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "5.3"
+    component: triage-api
+spec:
+  selector:
+    app: ai-data-pipeline
+    lab: "5.3"
+    component: triage-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pipeline-pvc-auditor
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "4.4"
+    component: persistent-auditor
+  annotations:
+    lab.muoilt.vn/purpose: "Write and reuse a real pipeline snapshot on a dynamically provisioned PVC"
+spec:
+  restartPolicy: Always
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: auditor
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/bash
+        - -ec
+      args:
+        - |
+          state_file=/var/lib/pipeline-state/dependency-audit.log
+          if [[ ! -s "${state_file}" ]]; then
+            checked_at="$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+            jar_sha="$(/usr/bin/sha256sum "${PIPELINE_JAR}" | /usr/bin/cut -d ' ' -f 1)"
+            flink_jobs="$(/usr/bin/curl -fsS "${FLINK_JOBS_URL}")"
+            iceberg_tables="$(/usr/bin/curl -fsS "${ICEBERG_TABLES_URL}")"
+            minio_http="$(/usr/bin/curl -fsS -o /dev/null -w '%{http_code}' "${MINIO_READY_URL}")"
+            {
+              printf 'created_at=%s\n' "${checked_at}"
+              printf 'creator_pod=%s\n' "${HOSTNAME}"
+              printf 'pipeline_jar_sha256=%s\n' "${jar_sha}"
+              printf 'minio_http=%s\n' "${minio_http}"
+              printf 'flink_jobs=%s\n' "${flink_jobs}"
+              printf 'iceberg_tables=%s\n' "${iceberg_tables}"
+            } > "${state_file}"
+            /usr/bin/sync "${state_file}"
+            echo "event=persistent_state_created pod=${HOSTNAME}"
+          else
+            echo "event=persistent_state_reused pod=${HOSTNAME}"
+          fi
+          state_sha="$(/usr/bin/sha256sum "${state_file}" | /usr/bin/cut -d ' ' -f 1)"
+          echo "event=persistent_state_ready pod=${HOSTNAME} state_sha256=${state_sha}"
+          cat "${state_file}"
+          while true; do
+            /usr/bin/sleep 3600
+          done
+      env:
+        - name: PIPELINE_JAR
+          value: /opt/flink/usrlib/ai-data-pipeline.jar
+        - name: FLINK_JOBS_URL
+          value: http://flink-jobmanager:8081/jobs/overview
+        - name: ICEBERG_TABLES_URL
+          value: http://iceberg-rest:8181/v1/namespaces/medallion/tables
+        - name: MINIO_READY_URL
+          value: http://minio:9000/minio/health/ready
+      volumeMounts:
+        - name: state
+          mountPath: /var/lib/pipeline-state
+      readinessProbe:
+        exec:
+          command:
+            - /usr/bin/test
+            - -s
+            - /var/lib/pipeline-state/dependency-audit.log
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        failureThreshold: 3
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+  volumes:
+    - name: state
+      persistentVolumeClaim:
+        claimName: pipeline-audit-state

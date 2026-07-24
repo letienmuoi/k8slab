@@ -1,0 +1,431 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-network-source
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "4.1"
+data:
+  NormalizerBackend.java: |
+    import com.sun.net.httpserver.HttpExchange;
+    import com.sun.net.httpserver.HttpServer;
+    import java.io.IOException;
+    import java.io.OutputStream;
+    import java.net.InetSocketAddress;
+    import java.net.URLDecoder;
+    import java.nio.charset.StandardCharsets;
+    import java.text.Normalizer;
+    import java.util.Locale;
+    import java.util.concurrent.Executors;
+
+    public class NormalizerBackend {
+        private static final String POD_NAME = System.getenv("HOSTNAME");
+
+        public static void main(String[] args) throws Exception {
+            HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+            server.createContext("/live", exchange -> respond(exchange, 200, "live=true\n"));
+            server.createContext("/ready", exchange -> respond(exchange, 200, "ready=true\n"));
+            server.createContext("/api", NormalizerBackend::normalizeRequest);
+            server.createContext("/normalize", NormalizerBackend::normalizeRequest);
+            server.setExecutor(Executors.newFixedThreadPool(4));
+            server.start();
+            System.out.printf("event=backend_started pod=%s port=8080%n", POD_NAME);
+        }
+
+        private static void normalizeRequest(HttpExchange exchange) throws IOException {
+            String original = queryValue(exchange, "line", "  DU   LIEU\tAI  ");
+            String normalized = normalize(original);
+            String body = "component=backend"
+                + "\npod=" + POD_NAME
+                + "\noriginal=" + original
+                + "\nnormalized=" + normalized
+                + "\ncharacter_count=" + normalized.length()
+                + "\n";
+            System.out.printf(
+                "event=normalize pod=%s path=%s character_count=%d%n",
+                POD_NAME, exchange.getRequestURI().getPath(), normalized.length()
+            );
+            respond(exchange, 200, body);
+        }
+
+        private static String normalize(String value) {
+            return Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .trim()
+                .replaceAll("\\s+", " ")
+                .toLowerCase(Locale.ROOT);
+        }
+
+        private static String queryValue(
+                HttpExchange exchange,
+                String expectedName,
+                String defaultValue) {
+            String rawQuery = exchange.getRequestURI().getRawQuery();
+            if (rawQuery == null || rawQuery.isBlank()) {
+                return defaultValue;
+            }
+            for (String pair : rawQuery.split("&")) {
+                String[] parts = pair.split("=", 2);
+                String name = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
+                if (expectedName.equals(name)) {
+                    String value = parts.length == 2 ? parts[1] : "";
+                    return URLDecoder.decode(value, StandardCharsets.UTF_8);
+                }
+            }
+            return defaultValue;
+        }
+
+        private static void respond(HttpExchange exchange, int status, String body)
+                throws IOException {
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(status, bytes.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(bytes);
+            }
+        }
+    }
+  PipelineFrontend.java: |
+    import com.sun.net.httpserver.HttpExchange;
+    import com.sun.net.httpserver.HttpServer;
+    import java.io.IOException;
+    import java.io.InputStream;
+    import java.io.OutputStream;
+    import java.net.HttpURLConnection;
+    import java.net.InetSocketAddress;
+    import java.net.URI;
+    import java.nio.charset.StandardCharsets;
+    import java.util.concurrent.Executors;
+
+    public class PipelineFrontend {
+        private static final String POD_NAME = System.getenv("HOSTNAME");
+        private static final String BACKEND_URL = System.getenv("BACKEND_URL");
+
+        public static void main(String[] args) throws Exception {
+            HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+            server.createContext("/live", exchange -> respond(exchange, 200, "live=true\n"));
+            server.createContext("/ready", exchange -> respond(exchange, 200, "ready=true\n"));
+            server.createContext("/api", PipelineFrontend::proxyBackend);
+            server.createContext("/", PipelineFrontend::home);
+            server.setExecutor(Executors.newFixedThreadPool(4));
+            server.start();
+            System.out.printf(
+                "event=frontend_started pod=%s backend_url=%s port=8080%n",
+                POD_NAME, BACKEND_URL
+            );
+        }
+
+        private static void home(HttpExchange exchange) throws IOException {
+            String body = "component=frontend"
+                + "\npod=" + POD_NAME
+                + "\nbackend_service=" + BACKEND_URL
+                + "\nusage=/api?line=DU%20LIEU%20AI"
+                + "\n";
+            respond(exchange, 200, body);
+        }
+
+        private static void proxyBackend(HttpExchange exchange) throws IOException {
+            String rawQuery = exchange.getRequestURI().getRawQuery();
+            String target = BACKEND_URL + (rawQuery == null ? "" : "?" + rawQuery);
+            HttpURLConnection connection = null;
+            try {
+                connection = (HttpURLConnection) URI.create(target).toURL().openConnection();
+                connection.setConnectTimeout(2000);
+                connection.setReadTimeout(5000);
+                int backendStatus = connection.getResponseCode();
+                InputStream stream = backendStatus >= 400
+                    ? connection.getErrorStream()
+                    : connection.getInputStream();
+                String backendBody = stream == null
+                    ? ""
+                    : new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+                String body = "component=frontend"
+                    + "\nfrontend_pod=" + POD_NAME
+                    + "\nrouted_by=frontend-service"
+                    + "\nbackend_status=" + backendStatus
+                    + "\n" + backendBody;
+                System.out.printf(
+                    "event=frontend_proxy pod=%s backend_status=%d%n",
+                    POD_NAME, backendStatus
+                );
+                respond(exchange, backendStatus, body);
+            } catch (Exception error) {
+                System.out.printf(
+                    "event=frontend_proxy_failed pod=%s error=%s%n",
+                    POD_NAME, error.getClass().getSimpleName()
+                );
+                respond(
+                    exchange,
+                    502,
+                    "component=frontend\nfrontend_pod=" + POD_NAME
+                        + "\nbackend_status=unavailable\n"
+                );
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            }
+        }
+
+        private static void respond(HttpExchange exchange, int status, String body)
+                throws IOException {
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(status, bytes.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(bytes);
+            }
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-backend
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "4.1"
+    component: normalizer-backend
+  annotations:
+    lab.muoilt.vn/purpose: "Serve the real project LineNormalizer behavior"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "4.1"
+      component: normalizer-backend
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "4.1"
+        component: normalizer-backend
+    spec:
+      terminationGracePeriodSeconds: 5
+      initContainers:
+        - name: compile-backend
+          image: eclipse-temurin:17-jdk-jammy
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/javac
+          args:
+            - --add-modules
+            - jdk.httpserver
+            - -d
+            - /opt/network-classes
+            - /opt/network-source/NormalizerBackend.java
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: source
+              mountPath: /opt/network-source
+              readOnly: true
+            - name: classes
+              mountPath: /opt/network-classes
+      containers:
+        - name: backend
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/java
+          args:
+            - -Xms16m
+            - -Xmx48m
+            - -XX:MaxMetaspaceSize=64m
+            - --add-modules
+            - jdk.httpserver
+            - -cp
+            - /opt/network-classes
+            - NormalizerBackend
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 192Mi
+          volumeMounts:
+            - name: classes
+              mountPath: /opt/network-classes
+              readOnly: true
+      volumes:
+        - name: source
+          configMap:
+            name: pipeline-network-source
+        - name: classes
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-frontend
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "4.1"
+    component: frontend
+  annotations:
+    lab.muoilt.vn/purpose: "Expose the normalization backend through a project frontend"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "4.1"
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "4.1"
+        component: frontend
+    spec:
+      terminationGracePeriodSeconds: 5
+      initContainers:
+        - name: compile-frontend
+          image: eclipse-temurin:17-jdk-jammy
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/javac
+          args:
+            - --add-modules
+            - jdk.httpserver
+            - -d
+            - /opt/network-classes
+            - /opt/network-source/PipelineFrontend.java
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: source
+              mountPath: /opt/network-source
+              readOnly: true
+            - name: classes
+              mountPath: /opt/network-classes
+      containers:
+        - name: frontend
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/java
+          args:
+            - -Xms16m
+            - -Xmx48m
+            - -XX:MaxMetaspaceSize=64m
+            - --add-modules
+            - jdk.httpserver
+            - -cp
+            - /opt/network-classes
+            - PipelineFrontend
+          env:
+            - name: BACKEND_URL
+              value: http://pipeline-backend:8080/api
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 150m
+              memory: 192Mi
+          volumeMounts:
+            - name: classes
+              mountPath: /opt/network-classes
+              readOnly: true
+      volumes:
+        - name: source
+          configMap:
+            name: pipeline-network-source
+        - name: classes
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-backend
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "4.1"
+    component: normalizer-backend
+  annotations:
+    lab.muoilt.vn/expected-fix: "selector component must be normalizer-backend"
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-data-pipeline
+    lab: "4.1"
+    component: normalizer-backend-broken
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-frontend
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "4.1"
+    component: frontend
+spec:
+  type: NodePort
+  selector:
+    app: ai-data-pipeline
+    lab: "4.1"
+    component: frontend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      nodePort: 30081

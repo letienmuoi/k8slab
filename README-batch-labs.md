@@ -1,4 +1,4 @@
-# Windows batch runners cho Lab 1.1–1.4
+# Windows batch runners cho Lab 1.1–5.4
 
 Các file `.bat` chạy từ Windows `cmd`, luôn chuyển về thư mục chứa script và chỉ thao tác resource có tên/label của từng lab trong namespace `data-platform`.
 
@@ -169,6 +169,115 @@ lab-3.4.bat cleanup
 
 `run` tạo namespace `pipeline-quota-lab`, inject resources bằng LimitRange, cho phép Pod audit đầu tiên và yêu cầu API server từ chối Pod thứ hai với lỗi `exceeded quota`. Namespace production `data-platform` không bị áp quota.
 
+## Lab 4.1
+
+```cmd
+lab-4.1.bat run
+lab-4.1.bat deploy
+lab-4.1.bat diagnose
+lab-4.1.bat fix
+lab-4.1.bat verify
+lab-4.1.bat cleanup
+```
+
+`run` deploy frontend NodePort và backend ClusterIP bằng image project. Backend thực hiện đúng logic normalize NFKC, trim, collapse whitespace và lowercase. Service backend cố ý bắt đầu với selector sai; runner chứng minh Endpoints rỗng và proxy lỗi, vá selector rồi kiểm tra EndpointSlice, ClusterIP và NodePort.
+
+## Lab 4.2
+
+```cmd
+lab-4.2.bat run
+lab-4.2.bat controller
+lab-4.2.bat apply
+lab-4.2.bat verify
+lab-4.2.bat cleanup
+lab-4.2.bat cleanup-controller
+```
+
+`run` bảo đảm application Lab 4.1 đã sẵn sàng, cài ingress-nginx dành riêng cho local lab nếu cluster chưa có controller, rồi route `/` tới frontend và `/api` thẳng tới backend. `cleanup` chỉ xóa Ingress; `cleanup-controller` chỉ gỡ controller có annotation xác nhận do lab quản lý.
+
+## Lab 4.3
+
+```cmd
+lab-4.3.bat run
+lab-4.3.bat baseline
+lab-4.3.bat apply
+lab-4.3.bat verify
+lab-4.3.bat cleanup
+```
+
+`run` chứng minh baseline trước khi áp policy, sau đó chỉ cho Pod frontend gọi backend trên TCP 8080. Backend chỉ được egress DNS tới CoreDNS; frontend đi qua backend vẫn thành công, Pod khác gọi thẳng backend và backend gọi Internet đều phải timeout.
+
+## Lab 4.4
+
+```cmd
+lab-4.4.bat run
+lab-4.4.bat provision
+lab-4.4.bat recreate
+lab-4.4.bat verify
+lab-4.4.bat cleanup
+```
+
+`run` request PVC `1Gi` từ StorageClass `standard`, ghi snapshot thật gồm checksum JAR, Flink jobs, Iceberg tables và trạng thái MinIO, rồi xóa/tạo lại Pod. Runner yêu cầu UID Pod thay đổi nhưng checksum snapshot giữ nguyên để chứng minh dữ liệu nằm trên volume.
+
+## Lab 5.1
+
+```cmd
+lab-5.1.bat run
+lab-5.1.bat deploy
+lab-5.1.bat break
+lab-5.1.bat verify
+lab-5.1.bat status
+lab-5.1.bat cleanup
+```
+
+`run` deploy Java health API bằng image project, chờ startup probe, yêu cầu file readiness chỉ xuất hiện sau khi kiểm tra JAR/Flink/Iceberg/MinIO, rồi xóa liveness state. Runner chỉ đạt khi kubelet restart `health-api`, `--previous` có log cũ và Pod trở lại Ready.
+
+## Lab 5.2
+
+```cmd
+lab-5.2.bat run
+lab-5.2.bat prepare
+lab-5.2.bat restart
+lab-5.2.bat logs
+lab-5.2.bat events
+lab-5.2.bat top
+lab-5.2.bat verify
+lab-5.2.bat cleanup
+lab-5.2.bat cleanup-metrics
+```
+
+`run` quan sát cùng workload bằng `logs -c`, `logs --previous`, `describe`, Events theo thời gian và `kubectl top --containers`. Nếu Metrics API chưa có, runner cài Metrics Server dành cho local cluster và chỉ gỡ khi annotation xác nhận Lab 5.2 là owner.
+
+## Lab 5.3
+
+```cmd
+lab-5.3.bat run
+lab-5.3.bat selector
+lab-5.3.bat runtime
+lab-5.3.bat fix-image
+lab-5.3.bat fix-port
+lab-5.3.bat solution
+lab-5.3.bat verify
+lab-5.3.bat cleanup
+```
+
+`run` yêu cầu ba lỗi xuất hiện đúng tầng: API server từ chối selector mismatch, kubelet báo `InvalidImageName`, rồi request Service thất bại do `targetPort: 9099`. Sau các fix, Service trả Flink jobs JSON thật qua `targetPort: 8080`.
+
+## Lab 5.4
+
+```cmd
+lab-5.4.bat run
+lab-5.4.bat lint
+lab-5.4.bat install
+lab-5.4.bat upgrade
+lab-5.4.bat rollback
+lab-5.4.bat history
+lab-5.4.bat verify
+lab-5.4.bat cleanup
+```
+
+`run` lint/render chart, install revision 1 với CLI overrides, upgrade revision 2 bằng values file rồi rollback tạo release revision 3. State được kiểm tra lần lượt là `stable/1 replica/15s`, `canary/2 replicas/5s`, rồi `stable/1 replica/15s`; mỗi Pod audit Flink, Iceberg, MinIO và project JAR thật.
+
 ## Lưu ý dữ liệu
 
-Cleanup chỉ xóa Kubernetes resource của lab. Record mà Lab 1.2 và Lab 1.3 đã ghi vào Kafka/Iceberg là dữ liệu nghiệp vụ thật và không bị xóa.
+Cleanup chỉ xóa Kubernetes resource của lab. Record mà Lab 1.2 và Lab 1.3 đã ghi vào Kafka/Iceberg là dữ liệu nghiệp vụ thật và không bị xóa. Riêng `lab-4.4.bat cleanup` xóa PVC và snapshot chỉ thuộc Lab 4.4.

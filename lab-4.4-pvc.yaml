@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pipeline-audit-state
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "4.4"
+    component: persistent-auditor
+  annotations:
+    lab.muoilt.vn/purpose: "Persist a real pipeline dependency snapshot across Pod recreation"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi

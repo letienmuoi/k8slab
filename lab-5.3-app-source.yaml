@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-triage-source
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "5.3"
+    component: triage-api
+data:
+  TriageApi.java: |
+    import com.sun.net.httpserver.HttpExchange;
+    import com.sun.net.httpserver.HttpServer;
+    import java.io.IOException;
+    import java.net.InetSocketAddress;
+    import java.net.URI;
+    import java.net.http.HttpClient;
+    import java.net.http.HttpRequest;
+    import java.net.http.HttpResponse;
+    import java.nio.charset.StandardCharsets;
+    import java.time.Duration;
+    import java.time.Instant;
+    import java.util.concurrent.Executors;
+
+    public final class TriageApi {
+        private static final String POD_NAME =
+                System.getenv().getOrDefault("POD_NAME", "unknown");
+        private static final String IMAGE_RELEASE =
+                System.getenv().getOrDefault("IMAGE_RELEASE", "unknown");
+        private static final String FLINK_JOBS_URL =
+                System.getenv().getOrDefault(
+                        "FLINK_JOBS_URL",
+                        "http://flink-jobmanager:8081/jobs/overview");
+        private static final HttpClient HTTP = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
+
+        private TriageApi() {
+        }
+
+        public static void main(String[] args) throws Exception {
+            HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+            server.createContext("/live", exchange -> respond(
+                    exchange, 200, "live=true\npod=" + POD_NAME + "\n"));
+            server.createContext("/ready", TriageApi::ready);
+            server.createContext("/api", TriageApi::business);
+            server.createContext("/", exchange -> respond(
+                    exchange,
+                    200,
+                    "component=pipeline-triage-api\n"
+                            + "pod=" + POD_NAME + "\n"
+                            + "release=" + IMAGE_RELEASE + "\n"
+                            + "business=/api\n"));
+            server.setExecutor(Executors.newFixedThreadPool(4));
+            server.start();
+            System.out.printf(
+                    "event=triage_api_started pod=%s release=%s at=%s%n",
+                    POD_NAME, IMAGE_RELEASE, Instant.now());
+        }
+
+        private static void ready(HttpExchange exchange) throws IOException {
+            try {
+                fetchFlinkJobs();
+                respond(exchange, 200, "ready=true\npod=" + POD_NAME + "\n");
+            } catch (Exception error) {
+                respond(exchange, 503, "ready=false\nerror=" + error.getMessage() + "\n");
+            }
+        }
+
+        private static void business(HttpExchange exchange) throws IOException {
+            try {
+                String jobs = fetchFlinkJobs();
+                respond(
+                        exchange,
+                        200,
+                        "component=pipeline-triage-api\n"
+                                + "pod=" + POD_NAME + "\n"
+                                + "release=" + IMAGE_RELEASE + "\n"
+                                + "checked_at=" + Instant.now() + "\n"
+                                + "flink_jobs=" + jobs.replaceAll("\\s+", " ").trim()
+                                + "\n");
+            } catch (Exception error) {
+                respond(exchange, 502, "error=" + error.getMessage() + "\n");
+            }
+        }
+
+        private static String fetchFlinkJobs() throws Exception {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(FLINK_JOBS_URL))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = HTTP.send(
+                    request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() != 200) {
+                throw new IOException("Flink returned HTTP " + response.statusCode());
+            }
+            return response.body();
+        }
+
+        private static void respond(HttpExchange exchange, int status, String body)
+                throws IOException {
+            byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set(
+                    "Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(status, payload.length);
+            exchange.getResponseBody().write(payload);
+            exchange.close();
+        }
+    }

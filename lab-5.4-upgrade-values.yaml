@@ -1,0 +1,11 @@
+replicaCount: 2
+releaseTrack: canary
+auditIntervalSeconds: 5
+
+resources:
+  requests:
+    cpu: 20m
+    memory: 48Mi
+  limits:
+    cpu: 150m
+    memory: 160Mi

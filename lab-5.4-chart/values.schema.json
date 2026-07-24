@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "replicaCount",
+    "image",
+    "releaseTrack",
+    "auditIntervalSeconds",
+    "pipelineJar",
+    "endpoints",
+    "resources"
+  ],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "repository",
+        "tag",
+        "pullPolicy"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "releaseTrack": {
+      "type": "string",
+      "enum": [
+        "stable",
+        "canary"
+      ]
+    },
+    "auditIntervalSeconds": {
+      "type": "integer",
+      "minimum": 2,
+      "maximum": 300
+    },
+    "pipelineJar": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpoints": {
+      "type": "object",
+      "required": [
+        "flinkJobs",
+        "icebergTables",
+        "minioReady"
+      ],
+      "properties": {
+        "flinkJobs": {
+          "type": "string",
+          "minLength": 1
+        },
+        "icebergTables": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minioReady": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "podAnnotations": {
+      "type": "object"
+    },
+    "resources": {
+      "type": "object"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+Release {{ .Release.Name }} manifest revision {{ .Release.Revision }} is deployed.
+
+Inspect the real dependency audit:
+  kubectl logs -n {{ .Release.Namespace }} deployment/{{ include "pipeline-auditor.fullname" . }} -c auditor --tail=20
+
+Inspect Helm history:
+  helm history {{ .Release.Name }} -n {{ .Release.Namespace }}

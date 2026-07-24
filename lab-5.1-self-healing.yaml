@@ -1,0 +1,374 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-health-source
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "5.1"
+    component: self-healing
+data:
+  PipelineHealthServer.java: |
+    import com.sun.net.httpserver.HttpExchange;
+    import com.sun.net.httpserver.HttpServer;
+    import java.io.IOException;
+    import java.io.InputStream;
+    import java.net.InetSocketAddress;
+    import java.net.URI;
+    import java.net.http.HttpClient;
+    import java.net.http.HttpRequest;
+    import java.net.http.HttpResponse;
+    import java.nio.charset.StandardCharsets;
+    import java.nio.file.Files;
+    import java.nio.file.Path;
+    import java.security.MessageDigest;
+    import java.time.Duration;
+    import java.time.Instant;
+    import java.util.HexFormat;
+    import java.util.concurrent.CountDownLatch;
+    import java.util.concurrent.Executors;
+
+    public final class PipelineHealthServer {
+        private static final Path STATE_DIR = Path.of(
+                System.getenv().getOrDefault("HEALTH_STATE_DIR", "/var/run/pipeline-health"));
+        private static final Path LIVE_FILE = STATE_DIR.resolve("live");
+        private static final Path READY_FILE = STATE_DIR.resolve("ready");
+        private static final Path SNAPSHOT_FILE = STATE_DIR.resolve("business-snapshot.txt");
+        private static final String POD_NAME = System.getenv().getOrDefault("POD_NAME", "unknown");
+        private static final HttpClient HTTP = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
+
+        private PipelineHealthServer() {
+        }
+
+        public static void main(String[] args) throws Exception {
+            int port = Integer.parseInt(System.getenv().getOrDefault("HTTP_PORT", "8080"));
+            int startupDelay = Integer.parseInt(
+                    System.getenv().getOrDefault("STARTUP_DELAY_SECONDS", "8"));
+
+            Files.createDirectories(STATE_DIR);
+            Files.deleteIfExists(LIVE_FILE);
+            Files.deleteIfExists(READY_FILE);
+            Files.deleteIfExists(SNAPSHOT_FILE);
+            System.out.printf(
+                    "event=startup_begin pod=%s delay_seconds=%d at=%s%n",
+                    POD_NAME, startupDelay, Instant.now());
+            Thread.sleep(Duration.ofSeconds(startupDelay).toMillis());
+
+            String snapshot = auditDependencies();
+            Files.writeString(SNAPSHOT_FILE, snapshot, StandardCharsets.UTF_8);
+
+            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            server.createContext("/live", PipelineHealthServer::handleLive);
+            server.createContext("/ready", PipelineHealthServer::handleReady);
+            server.createContext("/business", PipelineHealthServer::handleBusiness);
+            server.createContext("/", PipelineHealthServer::handleHome);
+            server.setExecutor(Executors.newFixedThreadPool(4));
+            server.start();
+
+            Files.writeString(LIVE_FILE, Instant.now().toString(), StandardCharsets.UTF_8);
+            Files.writeString(READY_FILE, Instant.now().toString(), StandardCharsets.UTF_8);
+            System.out.printf(
+                    "event=business_ready pod=%s jar_sha256=%s at=%s%n",
+                    POD_NAME, sha256(Path.of(requireEnv("PIPELINE_JAR"))), Instant.now());
+            System.out.print(snapshot);
+
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                System.out.printf("event=shutdown pod=%s at=%s%n", POD_NAME, Instant.now());
+                server.stop(0);
+            }));
+            new CountDownLatch(1).await();
+        }
+
+        private static String auditDependencies() throws Exception {
+            String flinkJobs = fetch(requireEnv("FLINK_JOBS_URL"));
+            String icebergTables = fetch(requireEnv("ICEBERG_TABLES_URL"));
+            String minioReady = fetch(requireEnv("MINIO_READY_URL"));
+            String jarHash = sha256(Path.of(requireEnv("PIPELINE_JAR")));
+
+            return "checked_at=" + Instant.now() + "\n"
+                    + "pod=" + POD_NAME + "\n"
+                    + "pipeline_jar_sha256=" + jarHash + "\n"
+                    + "flink_jobs=" + oneLine(flinkJobs) + "\n"
+                    + "iceberg_tables=" + oneLine(icebergTables) + "\n"
+                    + "minio_ready=" + oneLine(minioReady) + "\n";
+        }
+
+        private static String fetch(String url) throws Exception {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(5))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = HTTP.send(
+                    request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IOException("dependency returned HTTP " + response.statusCode()
+                        + " for " + url);
+            }
+            return "http_status=" + response.statusCode()
+                    + " body=" + response.body();
+        }
+
+        private static String sha256(Path path) throws Exception {
+            if (!Files.isRegularFile(path) || Files.size(path) == 0) {
+                throw new IOException("pipeline JAR is missing or empty: " + path);
+            }
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (InputStream input = Files.newInputStream(path)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        }
+
+        private static String requireEnv(String name) {
+            String value = System.getenv(name);
+            if (value == null || value.isBlank()) {
+                throw new IllegalStateException("missing environment variable " + name);
+            }
+            return value;
+        }
+
+        private static String oneLine(String value) {
+            return value.replaceAll("\\s+", " ").trim();
+        }
+
+        private static void handleLive(HttpExchange exchange) throws IOException {
+            boolean healthy = Files.isRegularFile(LIVE_FILE);
+            respond(exchange, healthy ? 200 : 503,
+                    "live=" + healthy + "\npod=" + POD_NAME + "\n");
+        }
+
+        private static void handleReady(HttpExchange exchange) throws IOException {
+            boolean ready = Files.isRegularFile(READY_FILE)
+                    && Files.isRegularFile(SNAPSHOT_FILE);
+            respond(exchange, ready ? 200 : 503,
+                    "ready=" + ready + "\npod=" + POD_NAME + "\n");
+        }
+
+        private static void handleBusiness(HttpExchange exchange) throws IOException {
+            if (!Files.isRegularFile(READY_FILE) || !Files.isRegularFile(SNAPSHOT_FILE)) {
+                respond(exchange, 503, "ready=false\npod=" + POD_NAME + "\n");
+                return;
+            }
+            respond(exchange, 200, Files.readString(SNAPSHOT_FILE, StandardCharsets.UTF_8));
+        }
+
+        private static void handleHome(HttpExchange exchange) throws IOException {
+            respond(exchange, 200,
+                    "component=pipeline-self-healing\n"
+                            + "pod=" + POD_NAME + "\n"
+                            + "liveness=/live\n"
+                            + "readiness=file:" + READY_FILE + "\n"
+                            + "business=/business\n");
+        }
+
+        private static void respond(HttpExchange exchange, int status, String body)
+                throws IOException {
+            byte[] payload = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set(
+                    "Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(status, payload.length);
+            exchange.getResponseBody().write(payload);
+            exchange.close();
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-self-healing
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "5.1"
+    component: self-healing
+  annotations:
+    lab.muoilt.vn/purpose: "Exercise startup, HTTP liveness and file readiness probes"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "5.1"
+      component: self-healing
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "5.1"
+        component: self-healing
+      annotations:
+        lab.muoilt.vn/business-checks: "Flink jobs, Iceberg tables, MinIO readiness and project JAR"
+    spec:
+      terminationGracePeriodSeconds: 5
+      initContainers:
+        - name: compile-health-server
+          image: eclipse-temurin:17-jdk-jammy
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/javac
+          args:
+            - --add-modules
+            - jdk.httpserver,java.net.http
+            - -d
+            - /opt/health-classes
+            - /opt/health-source/PipelineHealthServer.java
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: source
+              mountPath: /opt/health-source
+              readOnly: true
+            - name: classes
+              mountPath: /opt/health-classes
+      containers:
+        - name: health-api
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/java
+          args:
+            - -Xms16m
+            - -Xmx64m
+            - -XX:MaxMetaspaceSize=64m
+            - --add-modules
+            - jdk.httpserver,java.net.http
+            - -cp
+            - /opt/health-classes
+            - PipelineHealthServer
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PIPELINE_JAR
+              value: /opt/flink/usrlib/ai-data-pipeline.jar
+            - name: FLINK_JOBS_URL
+              value: http://flink-jobmanager:8081/jobs/overview
+            - name: ICEBERG_TABLES_URL
+              value: http://iceberg-rest:8181/v1/namespaces/medallion/tables
+            - name: MINIO_READY_URL
+              value: http://minio:9000/minio/health/ready
+            - name: STARTUP_DELAY_SECONDS
+              value: "8"
+            - name: HEALTH_STATE_DIR
+              value: /var/run/pipeline-health
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 20
+          readinessProbe:
+            exec:
+              command:
+                - /usr/bin/test
+                - -s
+                - /var/run/pipeline-health/ready
+            periodSeconds: 3
+            timeoutSeconds: 1
+            failureThreshold: 1
+            successThreshold: 1
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 1
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /usr/bin/bash
+                  - -ec
+                  - rm -f /var/run/pipeline-health/ready
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+            - name: classes
+              mountPath: /opt/health-classes
+              readOnly: true
+            - name: health-state
+              mountPath: /var/run/pipeline-health
+        - name: readiness-reporter
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/bash
+            - -uc
+          args:
+            - |
+              while true; do
+                checked_at="$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+                if /usr/bin/test -s /var/run/pipeline-health/ready; then
+                  if snapshot="$(/usr/bin/curl -fsS --max-time 3 http://127.0.0.1:8080/business)"; then
+                    echo "event=readiness_observed state=ready checked_at=${checked_at}"
+                    echo "${snapshot}"
+                  else
+                    echo "event=readiness_observed state=http-unavailable checked_at=${checked_at}"
+                  fi
+                else
+                  echo "event=readiness_observed state=not-ready checked_at=${checked_at}"
+                fi
+                /usr/bin/sleep 5
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 75m
+              memory: 96Mi
+          volumeMounts:
+            - name: health-state
+              mountPath: /var/run/pipeline-health
+              readOnly: true
+      volumes:
+        - name: source
+          configMap:
+            name: pipeline-health-source
+        - name: classes
+          emptyDir: {}
+        - name: health-state
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-self-healing
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "5.1"
+    component: self-healing
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-data-pipeline
+    lab: "5.1"
+    component: self-healing
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

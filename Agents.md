@@ -7,6 +7,8 @@
 - Docker Desktop is installed.
 - Kubernetes is enabled locally.
 - `kubectl` is installed. Observed client version: `v1.36.1`.
+- Helm `v4.2.3` is installed at `C:\Users\franc\AppData\Local\Programs\Helm\helm.exe`.
+- The Helm directory is in the user-level `PATH`; a newly opened `cmd` resolves `helm` directly.
 
 ## Windows Batch Runners
 
@@ -228,6 +230,122 @@ Run and cleanup:
 ```cmd
 lab-3.4.bat run
 lab-3.4.bat cleanup
+```
+
+## Lab 4.1: ClusterIP & NodePort
+
+- `pipeline-backend` is a ClusterIP Service over two real Java normalizer Pods.
+- `pipeline-frontend` is a NodePort Service fixed at `30081`; its application proxies `/api` to the backend.
+- The backend Service intentionally starts with selector `component=normalizer-backend-broken`.
+- Diagnosis must show zero endpoints and failed proxying before patching the selector to `component=normalizer-backend`.
+- Verification covers both legacy Endpoints (required by the exercise) and EndpointSlice.
+
+Run and cleanup:
+
+```cmd
+lab-4.1.bat run
+lab-4.1.bat cleanup
+```
+
+## Lab 4.2: Ingress Routing
+
+- Ingress `pipeline-routing` maps `/api` directly to `pipeline-backend:8080` and `/` to `pipeline-frontend:8080`.
+- An Ingress object needs a controller. The runner installs the pinned ingress-nginx bare-metal manifest only when no controller is available.
+- ingress-nginx is retired upstream, so this setup is for local CKAD practice only, not a new production design.
+- Controller cleanup is ownership-safe: it runs only when the Deployment has `lab.muoilt.vn/managed-by=lab-4.2`.
+
+Run and cleanup:
+
+```cmd
+lab-4.2.bat run
+lab-4.2.bat cleanup
+lab-4.2.bat cleanup-controller
+```
+
+## Lab 4.3: NetworkPolicy Isolation
+
+- The policy selects only Lab 4.1 backend Pods.
+- Ingress is allowed only from `component=pipeline-frontend` Pods on TCP `8080`.
+- Egress is allowed only to kube-system DNS Pods on TCP/UDP `53`; all other backend egress, including Internet, is denied by allow-list semantics.
+- Tests cover positive frontend-to-backend traffic, negative direct Pod-to-backend traffic, successful DNS, and blocked HTTPS egress.
+
+Run and cleanup:
+
+```cmd
+lab-4.3.bat run
+lab-4.3.bat cleanup
+```
+
+## Lab 4.4: Persistent Volume Claims
+
+- PVC `pipeline-audit-state` requests `1Gi`, `ReadWriteOnce` from the local default `standard` StorageClass.
+- Pod `pipeline-pvc-auditor` stores a real project snapshot: JAR SHA-256, MinIO HTTP status, Flink jobs and Iceberg tables.
+- Persistence is accepted only when the recreated Pod has a new UID and the snapshot checksum is unchanged.
+- The local StorageClass uses `WaitForFirstConsumer`, so the consumer Pod triggers provisioning and binding.
+
+Run and cleanup:
+
+```cmd
+lab-4.4.bat run
+lab-4.4.bat cleanup
+```
+
+## Lab 5.1: Self-Healing App
+
+- Deployment `pipeline-self-healing` runs the project image with `health-api` and `readiness-reporter` containers.
+- The Java health API hashes the real project JAR and checks Flink, Iceberg and MinIO before creating its readiness file.
+- Startup uses HTTP `/live`; readiness is an exec probe against `/var/run/pipeline-health/ready`; liveness is HTTP `/live`.
+- Removing the liveness state must increment only the `health-api` restart count, preserve previous logs and return the Pod to Ready.
+
+Run and cleanup:
+
+```cmd
+lab-5.1.bat run
+lab-5.1.bat cleanup
+```
+
+## Lab 5.2: CLI Observability
+
+- This lab observes the real self-healing incident from Lab 5.1 rather than generating synthetic logs.
+- Verification requires current logs from both containers, `health-api --previous`, Events `Unhealthy` and `Killing`, and `kubectl top --containers`.
+- Metrics Server v0.9.0 is installed only when Metrics API is absent and is annotated `lab.muoilt.vn/managed-by=lab-5.2`.
+- `cleanup-metrics` refuses to remove a Metrics Server owned by anything else.
+
+Run and cleanup:
+
+```cmd
+lab-5.2.bat run
+lab-5.2.bat cleanup
+lab-5.2.bat cleanup-metrics
+```
+
+## Lab 5.3: Broken YAML Triage
+
+- `lab-5.3-broken.yaml` fails admission because the Deployment selector does not match template labels.
+- `lab-5.3-selector-fixed.yaml` progresses to kubelet `InvalidImageName` using the intentionally invalid `INVALID@@TAG` reference.
+- After the image fix, the Pod is Ready but Service `targetPort: 9099` remains unusable.
+- Final `targetPort: 8080` verification returns the live Flink jobs JSON through `pipeline-triage`.
+
+Run and cleanup:
+
+```cmd
+lab-5.3.bat run
+lab-5.3.bat cleanup
+```
+
+## Lab 5.4: Helm Deploy & Rollback
+
+- Chart `lab-5.4-chart` deploys a real project dependency auditor.
+- Revision 1 uses CLI overrides: one replica, stable track and 15-second audits.
+- Revision 2 uses `lab-5.4-upgrade-values.yaml`: two replicas, canary track and 5-second audits.
+- Rollback creates release revision 3 while restoring manifest revision 1 and its stable values.
+- The runner finds Helm from PATH or falls back to `%LOCALAPPDATA%\Programs\Helm\helm.exe`.
+
+Run and cleanup:
+
+```cmd
+lab-5.4.bat run
+lab-5.4.bat cleanup
 ```
 
 Cleanup:

@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pipeline-auditor.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pipeline-auditor.labels" . | nindent 4 }}
+    app: ai-data-pipeline
+    component: helm-auditor
+  annotations:
+    lab.muoilt.vn/purpose: "Audit real project dependencies through Helm release lifecycle"
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "pipeline-auditor.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pipeline-auditor.selectorLabels" . | nindent 8 }}
+        app: ai-data-pipeline
+        lab: "5.4"
+        component: helm-auditor
+        release-track: {{ .Values.releaseTrack | quote }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: auditor
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/bin/bash
+            - -uc
+          args:
+            - |
+              jar_sha="$(/usr/bin/sha256sum "${PIPELINE_JAR}" | /usr/bin/cut -d ' ' -f 1)"
+              echo "event=helm_auditor_started release=${HELM_RELEASE} manifest_revision=${HELM_MANIFEST_REVISION} track=${RELEASE_TRACK} pod=${HOSTNAME} jar_sha256=${jar_sha}"
+              while true; do
+                checked_at="$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+                if flink_jobs="$(/usr/bin/curl -fsS --max-time 5 "${FLINK_JOBS_URL}")" \
+                    && iceberg_tables="$(/usr/bin/curl -fsS --max-time 5 "${ICEBERG_TABLES_URL}")" \
+                    && minio_http="$(/usr/bin/curl -fsS --max-time 5 -o /dev/null -w '%{http_code}' "${MINIO_READY_URL}")"; then
+                  echo "event=dependency_audit result=success checked_at=${checked_at} release=${HELM_RELEASE} manifest_revision=${HELM_MANIFEST_REVISION} track=${RELEASE_TRACK} pod=${HOSTNAME} minio_http=${minio_http}"
+                  echo "flink_jobs=${flink_jobs}"
+                  echo "iceberg_tables=${iceberg_tables}"
+                else
+                  echo "event=dependency_audit result=failure checked_at=${checked_at} release=${HELM_RELEASE} manifest_revision=${HELM_MANIFEST_REVISION} track=${RELEASE_TRACK} pod=${HOSTNAME}" >&2
+                fi
+                /usr/bin/sleep "${AUDIT_INTERVAL_SECONDS}"
+              done
+          env:
+            - name: PIPELINE_JAR
+              value: {{ .Values.pipelineJar | quote }}
+            - name: FLINK_JOBS_URL
+              value: {{ .Values.endpoints.flinkJobs | quote }}
+            - name: ICEBERG_TABLES_URL
+              value: {{ .Values.endpoints.icebergTables | quote }}
+            - name: MINIO_READY_URL
+              value: {{ .Values.endpoints.minioReady | quote }}
+            - name: AUDIT_INTERVAL_SECONDS
+              value: {{ .Values.auditIntervalSeconds | quote }}
+            - name: RELEASE_TRACK
+              value: {{ .Values.releaseTrack | quote }}
+            - name: HELM_RELEASE
+              value: {{ .Release.Name | quote }}
+            - name: HELM_MANIFEST_REVISION
+              value: {{ .Release.Revision | quote }}
+          startupProbe:
+            exec:
+              command:
+                - /usr/bin/test
+                - -s
+                - {{ .Values.pipelineJar | quote }}
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - /usr/bin/bash
+                - -ec
+                - |
+                  /usr/bin/test -s "${PIPELINE_JAR}"
+                  /usr/bin/curl -fsS --max-time 3 "${FLINK_JOBS_URL}" >/dev/null
+                  /usr/bin/curl -fsS --max-time 3 "${ICEBERG_TABLES_URL}" >/dev/null
+                  /usr/bin/curl -fsS --max-time 3 "${MINIO_READY_URL}" >/dev/null
+            periodSeconds: 5
+            timeoutSeconds: 4
+            failureThreshold: 2
+          livenessProbe:
+            exec:
+              command:
+                - /usr/bin/test
+                - -s
+                - {{ .Values.pipelineJar | quote }}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

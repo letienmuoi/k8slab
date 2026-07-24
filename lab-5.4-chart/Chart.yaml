@@ -1,0 +1,10 @@
+apiVersion: v2
+name: pipeline-auditor
+description: Helm lab that audits the live ai-data-pipeline dependencies
+type: application
+version: 0.1.0
+appVersion: "1.0.2"
+kubeVersion: ">=1.28.0-0"
+annotations:
+  lab.muoilt.vn/course: CKAD
+  lab.muoilt.vn/lab: "5.4"

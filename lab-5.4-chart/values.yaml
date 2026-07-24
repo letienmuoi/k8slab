@@ -1,0 +1,29 @@
+replicaCount: 1
+
+fullnameOverride: pipeline-helm-auditor
+
+image:
+  repository: mualanhlung017/ai-data-pipeline
+  tag: "1.0.2"
+  pullPolicy: IfNotPresent
+
+releaseTrack: stable
+auditIntervalSeconds: 15
+
+pipelineJar: /opt/flink/usrlib/ai-data-pipeline.jar
+
+endpoints:
+  flinkJobs: http://flink-jobmanager:8081/jobs/overview
+  icebergTables: http://iceberg-rest:8181/v1/namespaces/medallion/tables
+  minioReady: http://minio:9000/minio/health/ready
+
+podAnnotations:
+  lab.muoilt.vn/business-checks: Flink jobs, Iceberg tables, MinIO readiness and project JAR
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
