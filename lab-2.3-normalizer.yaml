@@ -1,0 +1,295 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-normalizer-source
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.3"
+    component: normalizer-api
+data:
+  NormalizerApi.java: |
+    import com.sun.net.httpserver.HttpExchange;
+    import com.sun.net.httpserver.HttpServer;
+    import java.io.IOException;
+    import java.io.InputStream;
+    import java.io.OutputStream;
+    import java.net.InetSocketAddress;
+    import java.net.URLDecoder;
+    import java.nio.charset.StandardCharsets;
+    import java.nio.file.Files;
+    import java.nio.file.Path;
+    import java.security.MessageDigest;
+    import java.text.Normalizer;
+    import java.time.Instant;
+    import java.util.HexFormat;
+    import java.util.Locale;
+    import java.util.concurrent.Executors;
+
+    public class NormalizerApi {
+        private static final String POD_NAME = env("HOSTNAME");
+        private static final String PIPELINE_JAR = env("PIPELINE_JAR");
+        private static final String[] SAMPLES = {
+            "  DU   LIEU\tAI  ",
+            "ＡＢＣ １２３",
+            "  APACHE   NIFI TO KAFKA  ",
+            "FLINK writes ICEBERG on MINIO",
+            "  MEDALLION   BRONZE SILVER GOLD "
+        };
+        private static String jarSha256;
+
+        public static void main(String[] args) throws Exception {
+            jarSha256 = sha256(Path.of(PIPELINE_JAR));
+            HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+            server.createContext("/live", exchange -> respond(exchange, 200, "live=true\n"));
+            server.createContext("/ready", exchange -> respond(
+                exchange,
+                Files.isRegularFile(Path.of(PIPELINE_JAR)) ? 200 : 503,
+                "ready=" + Files.isRegularFile(Path.of(PIPELINE_JAR)) + "\n"
+            ));
+            server.createContext("/normalize", NormalizerApi::normalizeRequest);
+            server.createContext("/work", NormalizerApi::work);
+            server.setExecutor(Executors.newFixedThreadPool(8));
+            server.start();
+            System.out.printf(
+                "event=normalizer_started pod=%s jar_sha256=%s%n",
+                POD_NAME, jarSha256
+            );
+        }
+
+        private static void normalizeRequest(HttpExchange exchange) throws IOException {
+            String original = queryValue(exchange, "line", "  DU   LIEU\tAI  ");
+            String normalized = normalize(original);
+            String body = "pod=" + POD_NAME
+                + "\noriginal=" + original
+                + "\nnormalized=" + normalized
+                + "\ncharacter_count=" + normalized.length()
+                + "\njar_sha256=" + jarSha256
+                + "\n";
+            System.out.printf(
+                "event=normalize pod=%s character_count=%d%n",
+                POD_NAME, normalized.length()
+            );
+            respond(exchange, 200, body);
+        }
+
+        private static void work(HttpExchange exchange) throws IOException {
+            int requested = parseInt(queryValue(exchange, "rounds", "50000"), 50000);
+            int rounds = Math.max(1000, Math.min(requested, 1_000_000));
+            long checksum = 0;
+            for (int index = 0; index < rounds; index++) {
+                String value = SAMPLES[index % SAMPLES.length] + " " + index;
+                String normalized = normalize(value);
+                checksum += normalized.length();
+                checksum += normalized.hashCode() & 0xffff;
+            }
+            String body = "pod=" + POD_NAME
+                + "\nrounds=" + rounds
+                + "\nchecksum=" + checksum
+                + "\ncompleted_at=" + Instant.now()
+                + "\n";
+            respond(exchange, 200, body);
+        }
+
+        private static String normalize(String value) {
+            if (value == null) {
+                return null;
+            }
+            return Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .trim()
+                .replaceAll("\\s+", " ")
+                .toLowerCase(Locale.ROOT);
+        }
+
+        private static String queryValue(
+                HttpExchange exchange,
+                String expectedName,
+                String defaultValue) {
+            String rawQuery = exchange.getRequestURI().getRawQuery();
+            if (rawQuery == null || rawQuery.isBlank()) {
+                return defaultValue;
+            }
+            for (String pair : rawQuery.split("&")) {
+                String[] parts = pair.split("=", 2);
+                String name = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
+                if (expectedName.equals(name)) {
+                    String value = parts.length == 2 ? parts[1] : "";
+                    return URLDecoder.decode(value, StandardCharsets.UTF_8);
+                }
+            }
+            return defaultValue;
+        }
+
+        private static int parseInt(String value, int fallback) {
+            try {
+                return Integer.parseInt(value);
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+
+        private static String sha256(Path path) throws Exception {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (InputStream input = Files.newInputStream(path)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        }
+
+        private static void respond(HttpExchange exchange, int status, String body)
+                throws IOException {
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(status, bytes.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(bytes);
+            }
+        }
+
+        private static String env(String name) {
+            String value = System.getenv(name);
+            if (value == null || value.isBlank()) {
+                throw new IllegalStateException("Missing environment variable " + name);
+            }
+            return value;
+        }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-normalizer-api
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.3"
+    component: normalizer-api
+  annotations:
+    kubernetes.io/change-cause: "Deploy scalable LineNormalizer API with ai-data-pipeline:1.0.2"
+    lab.muoilt.vn/purpose: "Expose real project normalization logic for manual and HPA scaling"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "2.3"
+      component: normalizer-api
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "2.3"
+        component: normalizer-api
+    spec:
+      terminationGracePeriodSeconds: 10
+      initContainers:
+        - name: compile-normalizer
+          image: eclipse-temurin:17-jdk-jammy
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/javac
+          args:
+            - --add-modules
+            - jdk.httpserver
+            - -d
+            - /opt/normalizer-classes
+            - /opt/normalizer-source/NormalizerApi.java
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: normalizer-source
+              mountPath: /opt/normalizer-source
+              readOnly: true
+            - name: normalizer-classes
+              mountPath: /opt/normalizer-classes
+      containers:
+        - name: normalizer
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/java
+          args:
+            - -Xms32m
+            - -Xmx64m
+            - -XX:MaxMetaspaceSize=64m
+            - -XX:ReservedCodeCacheSize=32m
+            - --add-modules
+            - jdk.httpserver
+            - -cp
+            - /opt/normalizer-classes
+            - NormalizerApi
+          env:
+            - name: PIPELINE_JAR
+              value: /opt/flink/usrlib/ai-data-pipeline.jar
+            - name: JAVA_TOOL_OPTIONS
+              value: -XX:MaxRAMPercentage=60.0
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 150m
+              memory: 256Mi
+          volumeMounts:
+            - name: normalizer-classes
+              mountPath: /opt/normalizer-classes
+              readOnly: true
+      volumes:
+        - name: normalizer-source
+          configMap:
+            name: pipeline-normalizer-source
+        - name: normalizer-classes
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-normalizer
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.3"
+    component: normalizer-api
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-data-pipeline
+    lab: "2.3"
+    component: normalizer-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

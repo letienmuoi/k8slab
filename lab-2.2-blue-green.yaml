@@ -1,0 +1,438 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-release-gateway-source
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.2"
+    component: release-gateway
+data:
+  ReleaseGateway.java: |
+    import com.sun.net.httpserver.HttpExchange;
+    import com.sun.net.httpserver.HttpServer;
+    import java.io.IOException;
+    import java.io.InputStream;
+    import java.io.OutputStream;
+    import java.net.InetSocketAddress;
+    import java.net.URI;
+    import java.net.http.HttpClient;
+    import java.net.http.HttpRequest;
+    import java.net.http.HttpResponse;
+    import java.nio.charset.StandardCharsets;
+    import java.nio.file.Files;
+    import java.nio.file.Path;
+    import java.security.MessageDigest;
+    import java.time.Duration;
+    import java.time.Instant;
+    import java.util.HexFormat;
+    import java.util.concurrent.Executors;
+
+    public class ReleaseGateway {
+        private static final String COLOR = env("RELEASE_COLOR");
+        private static final String RELEASE = env("RELEASE_VERSION");
+        private static final String POD_NAME = env("HOSTNAME");
+        private static final String PIPELINE_JAR = env("PIPELINE_JAR");
+        private static final String FLINK_JOBS_URL = env("FLINK_JOBS_URL");
+        private static final String ICEBERG_TABLES_URL = env("ICEBERG_TABLES_URL");
+        private static final String MINIO_READY_URL = env("MINIO_READY_URL");
+        private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(2))
+            .build();
+        private static String jarSha256;
+
+        public static void main(String[] args) throws Exception {
+            jarSha256 = sha256(Path.of(PIPELINE_JAR));
+            HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+            server.createContext("/live", ReleaseGateway::live);
+            server.createContext("/ready", ReleaseGateway::ready);
+            server.createContext("/", ReleaseGateway::gateway);
+            server.setExecutor(Executors.newFixedThreadPool(4));
+            server.start();
+            System.out.printf(
+                "event=gateway_started color=%s release=%s pod=%s jar_sha256=%s%n",
+                COLOR, RELEASE, POD_NAME, jarSha256
+            );
+        }
+
+        private static void live(HttpExchange exchange) throws IOException {
+            respond(exchange, 200, "live=true\ncolor=" + COLOR + "\n");
+        }
+
+        private static void ready(HttpExchange exchange) throws IOException {
+            try {
+                Audit audit = audit();
+                respond(
+                    exchange,
+                    200,
+                    "ready=true\ncolor=" + COLOR + "\nrelease=" + RELEASE
+                        + "\nminio_http=" + audit.minioHttp() + "\n"
+                );
+            } catch (Exception error) {
+                respond(exchange, 503, "ready=false\nerror=" + safe(error.getMessage()) + "\n");
+            }
+        }
+
+        private static void gateway(HttpExchange exchange) throws IOException {
+            try {
+                Audit audit = audit();
+                String body = "color=" + COLOR
+                    + "\nrelease=" + RELEASE
+                    + "\npod=" + POD_NAME
+                    + "\njar_sha256=" + jarSha256
+                    + "\nchecked_at=" + Instant.now()
+                    + "\nminio_http=" + audit.minioHttp()
+                    + "\nflink_jobs=" + audit.flinkJobs()
+                    + "\niceberg_tables=" + audit.icebergTables()
+                    + "\n";
+                System.out.printf(
+                    "event=gateway_request color=%s release=%s pod=%s path=%s%n",
+                    COLOR, RELEASE, POD_NAME, exchange.getRequestURI().getPath()
+                );
+                respond(exchange, 200, body);
+            } catch (Exception error) {
+                System.out.printf(
+                    "event=gateway_error color=%s release=%s pod=%s error=%s%n",
+                    COLOR, RELEASE, POD_NAME, safe(error.getMessage())
+                );
+                respond(exchange, 503, "error=" + safe(error.getMessage()) + "\n");
+            }
+        }
+
+        private static Audit audit() throws Exception {
+            String flinkJobs = getBody(FLINK_JOBS_URL);
+            String icebergTables = getBody(ICEBERG_TABLES_URL);
+            int minioHttp = getStatus(MINIO_READY_URL);
+            if (minioHttp != 200) {
+                throw new IOException("MinIO readiness returned HTTP " + minioHttp);
+            }
+            return new Audit(flinkJobs, icebergTables, minioHttp);
+        }
+
+        private static String getBody(String url) throws Exception {
+            HttpResponse<String> response = send(url);
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new IOException(url + " returned HTTP " + response.statusCode());
+            }
+            return response.body();
+        }
+
+        private static int getStatus(String url) throws Exception {
+            return send(url).statusCode();
+        }
+
+        private static HttpResponse<String> send(String url) throws Exception {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build();
+            return HTTP.send(request, HttpResponse.BodyHandlers.ofString());
+        }
+
+        private static String sha256(Path path) throws Exception {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            try (InputStream input = Files.newInputStream(path)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        }
+
+        private static void respond(HttpExchange exchange, int status, String body)
+                throws IOException {
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+            exchange.sendResponseHeaders(status, bytes.length);
+            try (OutputStream output = exchange.getResponseBody()) {
+                output.write(bytes);
+            }
+        }
+
+        private static String env(String name) {
+            String value = System.getenv(name);
+            if (value == null || value.isBlank()) {
+                throw new IllegalStateException("Missing environment variable " + name);
+            }
+            return value;
+        }
+
+        private static String safe(String value) {
+            return value == null ? "unknown" : value.replace('\n', ' ').replace('\r', ' ');
+        }
+
+        private record Audit(String flinkJobs, String icebergTables, int minioHttp) {}
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-release-blue
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.2"
+    component: release-gateway
+    track: blue
+  annotations:
+    kubernetes.io/change-cause: "Deploy blue release with ai-data-pipeline:1.0.1"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "2.2"
+      component: release-gateway
+      track: blue
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "2.2"
+        component: release-gateway
+        track: blue
+        release: v1
+    spec:
+      terminationGracePeriodSeconds: 10
+      initContainers:
+        - name: compile-gateway
+          image: eclipse-temurin:17-jdk-jammy
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/javac
+          args:
+            - --add-modules
+            - jdk.httpserver
+            - -d
+            - /opt/release-classes
+            - /opt/release-source/ReleaseGateway.java
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: gateway-source
+              mountPath: /opt/release-source
+              readOnly: true
+            - name: gateway-classes
+              mountPath: /opt/release-classes
+      containers:
+        - name: gateway
+          image: mualanhlung017/ai-data-pipeline:1.0.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/java
+          args:
+            - --add-modules
+            - jdk.httpserver
+            - -cp
+            - /opt/release-classes
+            - ReleaseGateway
+          env:
+            - name: RELEASE_COLOR
+              value: blue
+            - name: RELEASE_VERSION
+              value: "1.0.1"
+            - name: PIPELINE_JAR
+              value: /opt/flink/usrlib/ai-data-pipeline.jar
+            - name: FLINK_JOBS_URL
+              value: http://flink-jobmanager:8081/jobs/overview
+            - name: ICEBERG_TABLES_URL
+              value: http://iceberg-rest:8181/v1/namespaces/medallion/tables
+            - name: MINIO_READY_URL
+              value: http://minio:9000/minio/health/ready
+            - name: JAVA_TOOL_OPTIONS
+              value: -XX:MaxRAMPercentage=60.0
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+          volumeMounts:
+            - name: gateway-classes
+              mountPath: /opt/release-classes
+              readOnly: true
+      volumes:
+        - name: gateway-source
+          configMap:
+            name: pipeline-release-gateway-source
+        - name: gateway-classes
+          emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-release-green
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.2"
+    component: release-gateway
+    track: green
+  annotations:
+    kubernetes.io/change-cause: "Deploy green release with ai-data-pipeline:1.0.2"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "2.2"
+      component: release-gateway
+      track: green
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "2.2"
+        component: release-gateway
+        track: green
+        release: v2
+    spec:
+      terminationGracePeriodSeconds: 10
+      initContainers:
+        - name: compile-gateway
+          image: eclipse-temurin:17-jdk-jammy
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/javac
+          args:
+            - --add-modules
+            - jdk.httpserver
+            - -d
+            - /opt/release-classes
+            - /opt/release-source/ReleaseGateway.java
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: gateway-source
+              mountPath: /opt/release-source
+              readOnly: true
+            - name: gateway-classes
+              mountPath: /opt/release-classes
+      containers:
+        - name: gateway
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /opt/java/openjdk/bin/java
+          args:
+            - --add-modules
+            - jdk.httpserver
+            - -cp
+            - /opt/release-classes
+            - ReleaseGateway
+          env:
+            - name: RELEASE_COLOR
+              value: green
+            - name: RELEASE_VERSION
+              value: "1.0.2"
+            - name: PIPELINE_JAR
+              value: /opt/flink/usrlib/ai-data-pipeline.jar
+            - name: FLINK_JOBS_URL
+              value: http://flink-jobmanager:8081/jobs/overview
+            - name: ICEBERG_TABLES_URL
+              value: http://iceberg-rest:8181/v1/namespaces/medallion/tables
+            - name: MINIO_READY_URL
+              value: http://minio:9000/minio/health/ready
+            - name: JAVA_TOOL_OPTIONS
+              value: -XX:MaxRAMPercentage=60.0
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 300m
+              memory: 384Mi
+          volumeMounts:
+            - name: gateway-classes
+              mountPath: /opt/release-classes
+              readOnly: true
+      volumes:
+        - name: gateway-source
+          configMap:
+            name: pipeline-release-gateway-source
+        - name: gateway-classes
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pipeline-release-gateway
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.2"
+    component: release-gateway
+  annotations:
+    lab.muoilt.vn/purpose: "Single traffic entrypoint for blue/green releases"
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-data-pipeline
+    lab: "2.2"
+    component: release-gateway
+    track: blue
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

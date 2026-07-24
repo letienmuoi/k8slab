@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+nameSuffix: -dev
+
+labels:
+  - pairs:
+      environment: dev
+    includeSelectors: true
+
+images:
+  - name: mualanhlung017/ai-data-pipeline
+    newTag: 1.0.1
+
+replicas:
+  - name: pipeline-kustomize-auditor
+    count: 1

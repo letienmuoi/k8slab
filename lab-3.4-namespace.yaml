@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pipeline-quota-lab
+  labels:
+    app: ai-data-pipeline
+    lab: "3.4"
+  annotations:
+    lab.muoilt.vn/purpose: "Isolated namespace for ResourceQuota and LimitRange practice"

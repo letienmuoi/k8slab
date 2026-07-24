@@ -1,0 +1,87 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pipeline-secure-auditor
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "3.2"
+    component: secure-auditor
+  annotations:
+    lab.muoilt.vn/purpose: "Audit pipeline dependencies from a locked-down non-root container"
+spec:
+  restartPolicy: Always
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 5
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: auditor
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/bash
+        - -ec
+      args:
+        - |
+          umask 077
+          jar_sha="$(/usr/bin/sha256sum "${PIPELINE_JAR}" | /usr/bin/cut -d ' ' -f 1)"
+          echo "event=secure_auditor_started pod=${HOSTNAME} uid=$(/usr/bin/id -u) gid=$(/usr/bin/id -g) jar_sha256=${jar_sha}"
+          while true; do
+            flink_jobs="$(/usr/bin/curl -fsS "${FLINK_JOBS_URL}")"
+            iceberg_tables="$(/usr/bin/curl -fsS "${ICEBERG_TABLES_URL}")"
+            minio_http="$(/usr/bin/curl -fsS -o /dev/null -w '%{http_code}' "${MINIO_READY_URL}")"
+            echo "event=secure_dependency_audit pod=${HOSTNAME} uid=$(/usr/bin/id -u) minio_http=${minio_http}"
+            echo "flink_jobs=${flink_jobs}"
+            echo "iceberg_tables=${iceberg_tables}"
+            /usr/bin/sleep 30
+          done
+      env:
+        - name: PIPELINE_JAR
+          value: /opt/flink/usrlib/ai-data-pipeline.jar
+        - name: FLINK_JOBS_URL
+          value: http://flink-jobmanager:8081/jobs/overview
+        - name: ICEBERG_TABLES_URL
+          value: http://iceberg-rest:8181/v1/namespaces/medallion/tables
+        - name: MINIO_READY_URL
+          value: http://minio:9000/minio/health/ready
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      readinessProbe:
+        exec:
+          command:
+            - /usr/bin/bash
+            - -ec
+            - |
+              test "$(/usr/bin/id -u)" = "10001"
+              test -s "${PIPELINE_JAR}"
+              /usr/bin/curl -fsS "${FLINK_JOBS_URL}" >/dev/null
+              /usr/bin/curl -fsS "${ICEBERG_TABLES_URL}" >/dev/null
+              /usr/bin/curl -fsS "${MINIO_READY_URL}" >/dev/null
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 3
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+  volumes:
+    - name: tmp
+      emptyDir:
+        sizeLimit: 16Mi

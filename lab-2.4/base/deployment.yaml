@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pipeline-kustomize-auditor
+  labels:
+    app: ai-data-pipeline
+    lab: "2.4"
+    component: dependency-auditor
+  annotations:
+    kubernetes.io/change-cause: "Deploy project dependency auditor through Kustomize"
+    lab.muoilt.vn/purpose: "Audit the real Flink, Iceberg and MinIO dependencies"
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  minReadySeconds: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: ai-data-pipeline
+      lab: "2.4"
+      component: dependency-auditor
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "2.4"
+        component: dependency-auditor
+      annotations:
+        lab.muoilt.vn/checks: "Flink jobs, Iceberg Medallion tables and MinIO readiness"
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: auditor
+          image: mualanhlung017/ai-data-pipeline:1.0.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/bash
+            - -ec
+          args:
+            - |
+              jar_sha="$(/usr/bin/sha256sum "${PIPELINE_JAR}" | /usr/bin/cut -d ' ' -f 1)"
+              echo "event=auditor_started environment=${DEPLOYMENT_ENV} pod=${POD_NAME} jar_sha256=${jar_sha}"
+              while true; do
+                checked_at="$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+                flink_jobs="$(/usr/bin/curl -fsS "${FLINK_JOBS_URL}")"
+                iceberg_tables="$(/usr/bin/curl -fsS "${ICEBERG_TABLES_URL}")"
+                minio_http="$(/usr/bin/curl -fsS -o /dev/null -w '%{http_code}' "${MINIO_READY_URL}")"
+                echo "event=dependency_audit environment=${DEPLOYMENT_ENV} checked_at=${checked_at} pod=${POD_NAME} jar_sha256=${jar_sha} minio_http=${minio_http}"
+                echo "flink_jobs=${flink_jobs}"
+                echo "iceberg_tables=${iceberg_tables}"
+                /usr/bin/sleep "${AUDIT_INTERVAL_SECONDS}"
+              done
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: DEPLOYMENT_ENV
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['environment']
+            - name: PIPELINE_JAR
+              value: /opt/flink/usrlib/ai-data-pipeline.jar
+            - name: FLINK_JOBS_URL
+              value: http://flink-jobmanager:8081/jobs/overview
+            - name: ICEBERG_TABLES_URL
+              value: http://iceberg-rest:8181/v1/namespaces/medallion/tables
+            - name: MINIO_READY_URL
+              value: http://minio:9000/minio/health/ready
+            - name: AUDIT_INTERVAL_SECONDS
+              value: "20"
+          readinessProbe:
+            exec:
+              command:
+                - /usr/bin/bash
+                - -ec
+                - |
+                  test -s "${PIPELINE_JAR}"
+                  /usr/bin/curl -fsS "${FLINK_JOBS_URL}" >/dev/null
+                  /usr/bin/curl -fsS "${ICEBERG_TABLES_URL}" >/dev/null
+                  /usr/bin/curl -fsS "${MINIO_READY_URL}" >/dev/null
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /usr/bin/bash
+                  - -ec
+                  - 'echo "event=auditor_stopping environment=${DEPLOYMENT_ENV} pod=${POD_NAME}"; /usr/bin/sleep 2'
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

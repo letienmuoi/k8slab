@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: quota-auditor-allowed
+  namespace: pipeline-quota-lab
+  labels:
+    app: ai-data-pipeline
+    lab: "3.4"
+    component: quota-auditor
+    admission: allowed
+spec:
+  restartPolicy: Always
+  automountServiceAccountToken: false
+  terminationGracePeriodSeconds: 5
+  containers:
+    - name: auditor
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/bash
+        - -ec
+      args:
+        - |
+          echo "event=quota_auditor_started pod=${HOSTNAME}"
+          while true; do
+            flink_jobs="$(/usr/bin/curl -fsS "${FLINK_JOBS_URL}")"
+            iceberg_tables="$(/usr/bin/curl -fsS "${ICEBERG_TABLES_URL}")"
+            minio_http="$(/usr/bin/curl -fsS -o /dev/null -w '%{http_code}' "${MINIO_READY_URL}")"
+            echo "event=quota_dependency_audit pod=${HOSTNAME} minio_http=${minio_http}"
+            echo "flink_jobs=${flink_jobs}"
+            echo "iceberg_tables=${iceberg_tables}"
+            /usr/bin/sleep 30
+          done
+      env:
+        - name: FLINK_JOBS_URL
+          value: http://flink-jobmanager.data-platform.svc.cluster.local:8081/jobs/overview
+        - name: ICEBERG_TABLES_URL
+          value: http://iceberg-rest.data-platform.svc.cluster.local:8181/v1/namespaces/medallion/tables
+        - name: MINIO_READY_URL
+          value: http://minio.data-platform.svc.cluster.local:9000/minio/health/ready
+      readinessProbe:
+        exec:
+          command:
+            - /usr/bin/bash
+            - -ec
+            - |
+              /usr/bin/curl -fsS "${FLINK_JOBS_URL}" >/dev/null
+              /usr/bin/curl -fsS "${ICEBERG_TABLES_URL}" >/dev/null
+              /usr/bin/curl -fsS "${MINIO_READY_URL}" >/dev/null
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 3

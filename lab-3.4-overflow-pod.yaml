@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: quota-auditor-overflow
+  namespace: pipeline-quota-lab
+  labels:
+    app: ai-data-pipeline
+    lab: "3.4"
+    component: quota-auditor
+    admission: expected-rejection
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  containers:
+    - name: auditor
+      image: mualanhlung017/ai-data-pipeline:1.0.2
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/bin/bash
+        - -ec
+      args:
+        - |
+          /usr/bin/curl -fsS http://flink-jobmanager.data-platform.svc.cluster.local:8081/jobs/overview

@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pipeline-normalizer-load
+  namespace: data-platform
+  labels:
+    app: ai-data-pipeline
+    lab: "2.3"
+    component: load-generator
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 150
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app: ai-data-pipeline
+        lab: "2.3"
+        component: load-generator
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: load-generator
+          image: mualanhlung017/ai-data-pipeline:1.0.2
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/bin/bash
+            - -ec
+          args:
+            - |
+              deadline=$((SECONDS + LOAD_DURATION_SECONDS))
+              echo "event=load_started target=${TARGET_URL} concurrency=${CONCURRENCY} rounds=${NORMALIZE_ROUNDS}"
+              run_worker() {
+                while (( SECONDS < deadline )); do
+                  /usr/bin/curl -fsS "${TARGET_URL}/work?rounds=${NORMALIZE_ROUNDS}" >/dev/null
+                done
+              }
+              pids=()
+              for ((worker = 1; worker <= CONCURRENCY; worker++)); do
+                run_worker &
+                pids+=("$!")
+              done
+              status=0
+              for pid in "${pids[@]}"; do
+                wait "${pid}" || status=1
+              done
+              echo "event=load_completed status=${status}"
+              exit "${status}"
+          env:
+            - name: TARGET_URL
+              value: http://pipeline-normalizer:8080
+            - name: LOAD_DURATION_SECONDS
+              value: "90"
+            - name: CONCURRENCY
+              value: "8"
+            - name: NORMALIZE_ROUNDS
+              value: "50000"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
