@@ -1,0 +1,110 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qnet-quality
+  labels:
+    app.kubernetes.io/name: quality
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/version: "1.0.0"
+    tier: backend
+    track: stable
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: quality
+      app.kubernetes.io/instance: qnet-capstone
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: quality
+        app.kubernetes.io/instance: qnet-capstone
+        app.kubernetes.io/part-of: qnet-data-quality
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/version: "1.0.0"
+        tier: backend
+        track: stable
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: quality
+          image: mualanhlung017/qnet-quality:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: QUALITY_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: qnet-platform-config
+                  key: QUALITY_THRESHOLD
+            - name: PUBLIC_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: qnet-secrets
+                  key: public-api-token
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 160Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qnet-quality
+  labels:
+    app.kubernetes.io/name: quality
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: quality
+    app.kubernetes.io/instance: qnet-capstone
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

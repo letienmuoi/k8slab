@@ -1,0 +1,7 @@
+apiVersion: v2
+name: qnet-quality
+description: Helm package for the QNET dataset quality bounded context
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.29.0-0"

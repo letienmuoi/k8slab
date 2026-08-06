@@ -1,0 +1,25 @@
+replicaCount: 1
+
+image:
+  repository: mualanhlung017/qnet-quality
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+releaseTrack: stable
+qualityThreshold: 80
+existingSecret: qnet-secrets
+
+service:
+  port: 8080
+
+networkPolicy:
+  enabled: true
+  ingressNamespace: ingress-nginx
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 300m
+    memory: 160Mi

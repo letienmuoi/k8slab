@@ -1,0 +1,198 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qnet-gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+    app.kubernetes.io/component: edge
+    app.kubernetes.io/version: "1.0.0"
+    tier: frontend
+    track: stable
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+      app.kubernetes.io/instance: qnet-capstone
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/instance: qnet-capstone
+        app.kubernetes.io/part-of: qnet-data-quality
+        app.kubernetes.io/component: edge
+        app.kubernetes.io/version: "1.0.0"
+        tier: frontend
+        track: stable
+      annotations:
+        qnet.io/pattern: init-container-and-log-sidecar
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: runtime-config
+          image: mualanhlung017/qnet-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /app/bootstrap.py
+          envFrom:
+            - configMapRef:
+                name: qnet-platform-config
+          env:
+            - name: RUNTIME_CONFIG
+              value: /work/runtime.json
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 24Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: runtime
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: gateway
+          image: mualanhlung017/qnet-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RUNTIME_CONFIG
+              value: /work/runtime.json
+            - name: ACCESS_LOG_PATH
+              value: /var/log/gateway/access.log
+            - name: PUBLIC_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: qnet-secrets
+                  key: public-api-token
+            - name: CATALOG_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: qnet-secrets
+                  key: catalog-api-token
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 192Mi
+          volumeMounts:
+            - name: runtime
+              mountPath: /work
+              readOnly: true
+            - name: access-logs
+              mountPath: /var/log/gateway
+            - name: tmp
+              mountPath: /tmp
+        - name: access-log-sidecar
+          image: mualanhlung017/qnet-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /app/tail_logs.py
+          env:
+            - name: ACCESS_LOG_PATH
+              value: /var/log/gateway/access.log
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 48Mi
+          volumeMounts:
+            - name: access-logs
+              mountPath: /var/log/gateway
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: runtime
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: access-logs
+          emptyDir:
+            sizeLimit: 32Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qnet-gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/instance: qnet-capstone
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

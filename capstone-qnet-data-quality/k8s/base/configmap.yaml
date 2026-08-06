@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qnet-platform-config
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+data:
+  INGEST_URL: http://qnet-ingest:8080
+  NORMALIZER_URL: http://qnet-normalizer:8080
+  QUALITY_URL: http://qnet-quality:8080
+  CATALOG_URL: http://qnet-catalog:8080
+  MAX_RECORDS_PER_REQUEST: "500"
+  QUALITY_THRESHOLD: "80"

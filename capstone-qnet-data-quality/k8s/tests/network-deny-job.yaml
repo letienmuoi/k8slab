@@ -1,0 +1,61 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qnet-network-deny-test
+  namespace: qnet-capstone
+  labels:
+    app.kubernetes.io/name: network-deny-test
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+    app.kubernetes.io/component: test
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 60
+  ttlSecondsAfterFinished: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: network-deny-test
+        app.kubernetes.io/instance: qnet-capstone
+        app.kubernetes.io/part-of: qnet-data-quality
+        app.kubernetes.io/component: test
+        role: blocked-client
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: mualanhlung017/qnet-gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /app/network_probe.py
+          env:
+            - name: DENIED_URL
+              value: http://qnet-normalizer:8080/health/ready
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 5m
+              memory: 24Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi

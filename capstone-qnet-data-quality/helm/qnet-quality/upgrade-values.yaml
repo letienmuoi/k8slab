@@ -1,0 +1,5 @@
+replicaCount: 2
+image:
+  tag: "1.1.0"
+releaseTrack: canary
+qualityThreshold: 90

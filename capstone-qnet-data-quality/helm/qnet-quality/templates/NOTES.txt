@@ -1,0 +1,5 @@
+Quality release {{ .Release.Name }} revision {{ .Release.Revision }} is installed.
+
+Verify:
+  kubectl get deployment,service -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+  helm history {{ .Release.Name }} -n {{ .Release.Namespace }}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "replicaCount": {"type": "integer", "minimum": 1, "maximum": 5},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "releaseTrack": {"type": "string", "minLength": 1},
+    "qualityThreshold": {"type": "number", "minimum": 0, "maximum": 100},
+    "existingSecret": {"type": "string", "minLength": 1},
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "ingressNamespace": {"type": "string", "minLength": 1}
+      }
+    },
+    "resources": {"type": "object"}
+  },
+  "required": ["replicaCount", "image", "releaseTrack", "qualityThreshold", "existingSecret", "service", "networkPolicy", "resources"]
+}

@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: qnet-seed-dataset
+  namespace: qnet-capstone
+  labels:
+    app.kubernetes.io/name: seed-dataset
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+    app.kubernetes.io/component: batch
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 900
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seed-dataset
+        app.kubernetes.io/instance: qnet-capstone
+        app.kubernetes.io/part-of: qnet-data-quality
+        app.kubernetes.io/component: batch
+        role: access-client
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seed
+          image: mualanhlung017/qnet-ingest:1.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /app/seed.py
+          env:
+            - name: GATEWAY_URL
+              value: http://qnet-gateway:8080
+            - name: PUBLIC_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: qnet-secrets
+                  key: public-api-token
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 150m
+              memory: 96Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi

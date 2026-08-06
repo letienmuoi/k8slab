@@ -1,0 +1,72 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: qnet-capstone
+resources:
+  - ../../base
+  - ../../security
+  - ../../storage
+  - ../../network
+images:
+  - name: mualanhlung017/qnet-gateway
+    newTag: 1.1.0
+  - name: mualanhlung017/qnet-ingest
+    newTag: 1.1.0
+  - name: mualanhlung017/qnet-quality
+    newTag: 1.1.0
+  - name: mualanhlung017/qnet-catalog
+    newTag: 1.1.0
+labels:
+  - pairs:
+      environment: prod
+    includeSelectors: false
+    includeTemplates: true
+patches:
+  - target:
+      kind: Deployment
+      name: qnet-gateway
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0
+  - target:
+      kind: Deployment
+      name: qnet-ingest
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0
+  - target:
+      kind: Deployment
+      name: qnet-quality
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0
+  - target:
+      kind: Deployment
+      name: qnet-catalog
+    patch: |-
+      - op: replace
+        path: /metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0
+      - op: replace
+        path: /spec/template/metadata/labels/app.kubernetes.io~1version
+        value: 1.1.0

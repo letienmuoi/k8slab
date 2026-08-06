@@ -1,0 +1,175 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qnet-normalizer-blue
+  labels:
+    app.kubernetes.io/name: normalizer
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/version: "1.0.0"
+    tier: backend
+    track: blue
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: normalizer
+      app.kubernetes.io/instance: qnet-capstone
+      track: blue
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: normalizer
+        app.kubernetes.io/instance: qnet-capstone
+        app.kubernetes.io/part-of: qnet-data-quality
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/version: "1.0.0"
+        tier: backend
+        track: blue
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: normalizer
+          image: mualanhlung017/qnet-normalizer:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 40m
+              memory: 48Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qnet-normalizer-green
+  labels:
+    app.kubernetes.io/name: normalizer
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/version: "1.1.0"
+    tier: backend
+    track: green
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: normalizer
+      app.kubernetes.io/instance: qnet-capstone
+      track: green
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: normalizer
+        app.kubernetes.io/instance: qnet-capstone
+        app.kubernetes.io/part-of: qnet-data-quality
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/version: "1.1.0"
+        tier: backend
+        track: green
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: normalizer
+          image: mualanhlung017/qnet-normalizer:1.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 40m
+              memory: 48Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qnet-normalizer
+  labels:
+    app.kubernetes.io/name: normalizer
+    app.kubernetes.io/instance: qnet-capstone
+    app.kubernetes.io/part-of: qnet-data-quality
+    active-track: blue
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: normalizer
+    app.kubernetes.io/instance: qnet-capstone
+    track: blue
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

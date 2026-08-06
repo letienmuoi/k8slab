@@ -1,0 +1,194 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-default-deny-ingress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: qnet-data-quality
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-allow-gateway-ingress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+      app.kubernetes.io/instance: qnet-capstone
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              role: access-client
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-allow-ingest-ingress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingest
+      app.kubernetes.io/instance: qnet-capstone
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+              app.kubernetes.io/instance: qnet-capstone
+        - podSelector:
+            matchLabels:
+              role: access-client
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-allow-normalizer-ingress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: normalizer
+      app.kubernetes.io/instance: qnet-capstone
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest
+              app.kubernetes.io/instance: qnet-capstone
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+              app.kubernetes.io/instance: qnet-capstone
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-allow-quality-ingress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: quality
+      app.kubernetes.io/instance: qnet-capstone
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest
+              app.kubernetes.io/instance: qnet-capstone
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+              app.kubernetes.io/instance: qnet-capstone
+        - podSelector:
+            matchLabels:
+              role: access-client
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-allow-catalog-ingress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: catalog
+      app.kubernetes.io/instance: qnet-capstone
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest
+              app.kubernetes.io/instance: qnet-capstone
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+              app.kubernetes.io/instance: qnet-capstone
+        - podSelector:
+            matchLabels:
+              role: access-client
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-workers-dns-only-egress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: qnet-catalog-no-egress
+  labels:
+    app.kubernetes.io/part-of: qnet-data-quality
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: catalog
+      app.kubernetes.io/instance: qnet-capstone
+  policyTypes:
+    - Egress
+  egress: []
